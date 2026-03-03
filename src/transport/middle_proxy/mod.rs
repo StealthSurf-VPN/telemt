@@ -18,6 +18,7 @@ mod rotation;
 mod send;
 mod secret;
 mod wire;
+mod pool_status;
 
 use bytes::Bytes;
 

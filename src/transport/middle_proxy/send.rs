@@ -9,7 +9,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc::error::TrySendError;
 use tracing::{debug, warn};
 
-use crate::config::MeRouteNoWriterMode;
+use crate::config::{MeRouteNoWriterMode, MeWriterPickMode};
 use crate::error::{ProxyError, Result};
 use crate::network::IpFamily;
 use crate::protocol::constants::{RPC_CLOSE_CONN_U32, RPC_CLOSE_EXT_U32};
@@ -24,6 +24,10 @@ use super::registry::ConnMeta;
 const IDLE_WRITER_PENALTY_MID_SECS: u64 = 45;
 const IDLE_WRITER_PENALTY_HIGH_SECS: u64 = 55;
 const HYBRID_GLOBAL_BURST_PERIOD_ROUNDS: u32 = 4;
+const PICK_PENALTY_WARM: u64 = 200;
+const PICK_PENALTY_DRAINING: u64 = 600;
+const PICK_PENALTY_STALE: u64 = 300;
+const PICK_PENALTY_DEGRADED: u64 = 250;
 
 impl MePool {
     /// Send RPC_PROXY_REQ. `tag_override`: per-user ad_tag (from access.user_ad_tags); if None, uses pool default.
@@ -181,6 +185,7 @@ impl MePool {
                     .await;
             }
             if candidate_indices.is_empty() {
+                let pick_mode = self.writer_pick_mode();
                 match no_writer_mode {
                     MeRouteNoWriterMode::AsyncRecoveryFailfast => {
                         let deadline = *no_writer_deadline.get_or_insert_with(|| {
@@ -196,6 +201,7 @@ impl MePool {
                         if self.wait_for_candidate_until(routed_dc, deadline).await {
                             continue;
                         }
+                        self.stats.increment_me_writer_pick_no_candidate_total(pick_mode);
                         self.stats.increment_me_no_writer_failfast_total();
                         return Err(ProxyError::Proxy(
                             "No ME writers available for target DC in failfast window".into(),
@@ -209,10 +215,12 @@ impl MePool {
                             if self.wait_for_candidate_until(routed_dc, deadline).await {
                                 continue;
                             }
+                            self.stats.increment_me_writer_pick_no_candidate_total(pick_mode);
                             self.stats.increment_me_no_writer_failfast_total();
                             return Err(ProxyError::Proxy("No ME writers available for target DC".into()));
                         }
                         if emergency_attempts >= self.me_route_inline_recovery_attempts.max(1) {
+                            self.stats.increment_me_writer_pick_no_candidate_total(pick_mode);
                             self.stats.increment_me_no_writer_failfast_total();
                             return Err(ProxyError::Proxy("No ME writers available for target DC".into()));
                         }
@@ -237,6 +245,7 @@ impl MePool {
                                 .await;
                         }
                         if candidate_indices.is_empty() {
+                            self.stats.increment_me_writer_pick_no_candidate_total(pick_mode);
                             return Err(ProxyError::Proxy("No ME writers available for target DC".into()));
                         }
                     }
@@ -259,6 +268,8 @@ impl MePool {
                 }
             }
             hybrid_wait_current = hybrid_wait_step;
+            let pick_mode = self.writer_pick_mode();
+            let pick_sample_size = self.writer_pick_sample_size();
             let writer_ids: Vec<u64> = candidate_indices
                 .iter()
                 .map(|idx| writers_snapshot[*idx].id)
@@ -268,69 +279,84 @@ impl MePool {
                 .writer_idle_since_for_writer_ids(&writer_ids)
                 .await;
             let now_epoch_secs = Self::now_epoch_secs();
-
-            if self.me_deterministic_writer_sort.load(Ordering::Relaxed) {
-                candidate_indices.sort_by(|lhs, rhs| {
-                    let left = &writers_snapshot[*lhs];
-                    let right = &writers_snapshot[*rhs];
-                    let left_key = (
-                        self.writer_contour_rank_for_selection(left),
-                        (left.generation < self.current_generation()) as usize,
-                        left.degraded.load(Ordering::Relaxed) as usize,
-                        self.writer_idle_rank_for_selection(
-                            left,
-                            &writer_idle_since,
-                            now_epoch_secs,
-                        ),
-                        Reverse(left.tx.capacity()),
-                        left.addr,
-                        left.id,
-                    );
-                    let right_key = (
-                        self.writer_contour_rank_for_selection(right),
-                        (right.generation < self.current_generation()) as usize,
-                        right.degraded.load(Ordering::Relaxed) as usize,
-                        self.writer_idle_rank_for_selection(
-                            right,
-                            &writer_idle_since,
-                            now_epoch_secs,
-                        ),
-                        Reverse(right.tx.capacity()),
-                        right.addr,
-                        right.id,
-                    );
-                    left_key.cmp(&right_key)
-                });
-            } else {
-                candidate_indices.sort_by_key(|idx| {
-                    let w = &writers_snapshot[*idx];
-                    let degraded = w.degraded.load(Ordering::Relaxed);
-                    let stale = (w.generation < self.current_generation()) as usize;
-                    (
-                        self.writer_contour_rank_for_selection(w),
-                        stale,
-                        degraded as usize,
-                        self.writer_idle_rank_for_selection(
-                            w,
-                            &writer_idle_since,
-                            now_epoch_secs,
-                        ),
-                        Reverse(w.tx.capacity()),
-                    )
-                });
-            }
-
             let start = self.rr.fetch_add(1, Ordering::Relaxed) as usize % candidate_indices.len();
+            let ordered_candidate_indices = if pick_mode == MeWriterPickMode::P2c {
+                self.p2c_ordered_candidate_indices(
+                    &candidate_indices,
+                    &writers_snapshot,
+                    &writer_idle_since,
+                    now_epoch_secs,
+                    start,
+                    pick_sample_size,
+                )
+            } else {
+                if self.me_deterministic_writer_sort.load(Ordering::Relaxed) {
+                    candidate_indices.sort_by(|lhs, rhs| {
+                        let left = &writers_snapshot[*lhs];
+                        let right = &writers_snapshot[*rhs];
+                        let left_key = (
+                            self.writer_contour_rank_for_selection(left),
+                            (left.generation < self.current_generation()) as usize,
+                            left.degraded.load(Ordering::Relaxed) as usize,
+                            self.writer_idle_rank_for_selection(
+                                left,
+                                &writer_idle_since,
+                                now_epoch_secs,
+                            ),
+                            Reverse(left.tx.capacity()),
+                            left.addr,
+                            left.id,
+                        );
+                        let right_key = (
+                            self.writer_contour_rank_for_selection(right),
+                            (right.generation < self.current_generation()) as usize,
+                            right.degraded.load(Ordering::Relaxed) as usize,
+                            self.writer_idle_rank_for_selection(
+                                right,
+                                &writer_idle_since,
+                                now_epoch_secs,
+                            ),
+                            Reverse(right.tx.capacity()),
+                            right.addr,
+                            right.id,
+                        );
+                        left_key.cmp(&right_key)
+                    });
+                } else {
+                    candidate_indices.sort_by_key(|idx| {
+                        let w = &writers_snapshot[*idx];
+                        let degraded = w.degraded.load(Ordering::Relaxed);
+                        let stale = (w.generation < self.current_generation()) as usize;
+                        (
+                            self.writer_contour_rank_for_selection(w),
+                            stale,
+                            degraded as usize,
+                            self.writer_idle_rank_for_selection(
+                                w,
+                                &writer_idle_since,
+                                now_epoch_secs,
+                            ),
+                            Reverse(w.tx.capacity()),
+                        )
+                    });
+                }
+
+                let mut ordered = Vec::<usize>::with_capacity(candidate_indices.len());
+                for offset in 0..candidate_indices.len() {
+                    ordered.push(candidate_indices[(start + offset) % candidate_indices.len()]);
+                }
+                ordered
+            };
             let mut fallback_blocking_idx: Option<usize> = None;
 
-            for offset in 0..candidate_indices.len() {
-                let idx = candidate_indices[(start + offset) % candidate_indices.len()];
+            for idx in ordered_candidate_indices {
                 let w = &writers_snapshot[idx];
                 if !self.writer_accepts_new_binding(w) {
                     continue;
                 }
                 match w.tx.try_send(WriterCommand::Data(payload.clone())) {
                     Ok(()) => {
+                        self.stats.increment_me_writer_pick_success_try_total(pick_mode);
                         self.registry
                             .bind_writer(conn_id, w.id, w.tx.clone(), meta.clone())
                             .await;
@@ -352,6 +378,7 @@ impl MePool {
                         }
                     }
                     Err(TrySendError::Closed(_)) => {
+                        self.stats.increment_me_writer_pick_closed_total(pick_mode);
                         warn!(writer_id = w.id, "ME writer channel closed");
                         self.remove_writer_and_close_clients(w.id).await;
                         continue;
@@ -360,15 +387,20 @@ impl MePool {
             }
 
             let Some(blocking_idx) = fallback_blocking_idx else {
+                self.stats.increment_me_writer_pick_full_total(pick_mode);
                 continue;
             };
 
             let w = writers_snapshot[blocking_idx].clone();
             if !self.writer_accepts_new_binding(&w) {
+                self.stats.increment_me_writer_pick_full_total(pick_mode);
                 continue;
             }
+            self.stats.increment_me_writer_pick_blocking_fallback_total();
             match w.tx.send(WriterCommand::Data(payload.clone())).await {
                 Ok(()) => {
+                    self.stats
+                        .increment_me_writer_pick_success_fallback_total(pick_mode);
                     self.registry
                         .bind_writer(conn_id, w.id, w.tx.clone(), meta.clone())
                         .await;
@@ -378,6 +410,7 @@ impl MePool {
                     return Ok(());
                 }
                 Err(_) => {
+                    self.stats.increment_me_writer_pick_closed_total(pick_mode);
                     warn!(writer_id = w.id, "ME writer channel closed (blocking)");
                     self.remove_writer_and_close_clients(w.id).await;
                 }
@@ -625,5 +658,88 @@ impl MePool {
         } else {
             0
         }
+    }
+
+    fn writer_pick_score(
+        &self,
+        writer: &super::pool::MeWriter,
+        idle_since_by_writer: &HashMap<u64, u64>,
+        now_epoch_secs: u64,
+    ) -> u64 {
+        let contour_penalty = match WriterContour::from_u8(writer.contour.load(Ordering::Relaxed)) {
+            WriterContour::Active => 0,
+            WriterContour::Warm => PICK_PENALTY_WARM,
+            WriterContour::Draining => PICK_PENALTY_DRAINING,
+        };
+        let stale_penalty = if writer.generation < self.current_generation() {
+            PICK_PENALTY_STALE
+        } else {
+            0
+        };
+        let degraded_penalty = if writer.degraded.load(Ordering::Relaxed) {
+            PICK_PENALTY_DEGRADED
+        } else {
+            0
+        };
+        let idle_penalty =
+            (self.writer_idle_rank_for_selection(writer, idle_since_by_writer, now_epoch_secs) as u64)
+                * 100;
+        let queue_cap = self.writer_cmd_channel_capacity.max(1) as u64;
+        let queue_remaining = writer.tx.capacity() as u64;
+        let queue_used = queue_cap.saturating_sub(queue_remaining.min(queue_cap));
+        let queue_util_pct = queue_used.saturating_mul(100) / queue_cap;
+        let queue_penalty = queue_util_pct.saturating_mul(4);
+        let rtt_penalty = ((writer.rtt_ema_ms_x10.load(Ordering::Relaxed) as u64).saturating_add(5) / 10)
+            .min(400);
+
+        contour_penalty
+            .saturating_add(stale_penalty)
+            .saturating_add(degraded_penalty)
+            .saturating_add(idle_penalty)
+            .saturating_add(queue_penalty)
+            .saturating_add(rtt_penalty)
+    }
+
+    fn p2c_ordered_candidate_indices(
+        &self,
+        candidate_indices: &[usize],
+        writers_snapshot: &[super::pool::MeWriter],
+        idle_since_by_writer: &HashMap<u64, u64>,
+        now_epoch_secs: u64,
+        start: usize,
+        sample_size: usize,
+    ) -> Vec<usize> {
+        let total = candidate_indices.len();
+        if total == 0 {
+            return Vec::new();
+        }
+
+        let mut sampled = Vec::<usize>::with_capacity(sample_size.min(total));
+        let mut seen = HashSet::<usize>::with_capacity(total);
+        for offset in 0..sample_size.min(total) {
+            let idx = candidate_indices[(start + offset) % total];
+            if seen.insert(idx) {
+                sampled.push(idx);
+            }
+        }
+
+        sampled.sort_by_key(|idx| {
+            let writer = &writers_snapshot[*idx];
+            (
+                self.writer_pick_score(writer, idle_since_by_writer, now_epoch_secs),
+                writer.addr,
+                writer.id,
+            )
+        });
+
+        let mut ordered = Vec::<usize>::with_capacity(total);
+        ordered.extend(sampled.iter().copied());
+        for offset in 0..total {
+            let idx = candidate_indices[(start + offset) % total];
+            if seen.insert(idx) {
+                ordered.push(idx);
+            }
+        }
+        ordered
     }
 }

@@ -7,10 +7,10 @@ use crate::transport::UpstreamRouteKind;
 
 use super::ApiShared;
 use super::model::{
-    DcStatus, DcStatusData, MeWriterStatus, MeWritersData, MeWritersSummary, MinimalAllData,
-    MinimalAllPayload, MinimalDcPathData, MinimalMeRuntimeData, MinimalQuarantineData,
-    UpstreamDcStatus, UpstreamStatus, UpstreamSummaryData, UpstreamsData, ZeroAllData,
-    ZeroCodeCount, ZeroCoreData, ZeroDesyncData, ZeroMiddleProxyData, ZeroPoolData,
+    DcEndpointWriters, DcStatus, DcStatusData, MeWriterStatus, MeWritersData, MeWritersSummary,
+    MinimalAllData, MinimalAllPayload, MinimalDcPathData, MinimalMeRuntimeData,
+    MinimalQuarantineData, UpstreamDcStatus, UpstreamStatus, UpstreamSummaryData, UpstreamsData,
+    ZeroAllData, ZeroCodeCount, ZeroCoreData, ZeroDesyncData, ZeroMiddleProxyData, ZeroPoolData,
     ZeroUpstreamData,
 };
 
@@ -346,6 +346,14 @@ async fn get_minimal_payload_cached(
                     .into_iter()
                     .map(|value| value.to_string())
                     .collect(),
+                endpoint_writers: entry
+                    .endpoint_writers
+                    .into_iter()
+                    .map(|coverage| DcEndpointWriters {
+                        endpoint: coverage.endpoint.to_string(),
+                        active_writers: coverage.active_writers,
+                    })
+                    .collect(),
                 available_endpoints: entry.available_endpoints,
                 available_pct: entry.available_pct,
                 required_writers: entry.required_writers,
@@ -422,6 +430,8 @@ async fn get_minimal_payload_cached(
         me_single_endpoint_shadow_rotate_every_secs: runtime
             .me_single_endpoint_shadow_rotate_every_secs,
         me_deterministic_writer_sort: runtime.me_deterministic_writer_sort,
+        me_writer_pick_mode: runtime.me_writer_pick_mode,
+        me_writer_pick_sample_size: runtime.me_writer_pick_sample_size,
         me_socks_kdf_policy: runtime.me_socks_kdf_policy,
         quarantined_endpoints_total: runtime.quarantined_endpoints.len(),
         quarantined_endpoints: runtime

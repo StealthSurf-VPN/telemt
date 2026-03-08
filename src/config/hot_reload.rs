@@ -29,7 +29,10 @@ use notify::{EventKind, RecursiveMode, Watcher, recommended_watcher};
 use tokio::sync::{mpsc, watch};
 use tracing::{error, info, warn};
 
-use crate::config::{LogLevel, MeBindStaleMode, MeFloorMode, MeSocksKdfPolicy, MeTelemetryLevel};
+use crate::config::{
+    LogLevel, MeBindStaleMode, MeFloorMode, MeSocksKdfPolicy, MeTelemetryLevel,
+    MeWriterPickMode,
+};
 use super::load::ProxyConfig;
 
 // ── Hot fields ────────────────────────────────────────────────────────────────
@@ -57,6 +60,8 @@ pub struct HotFields {
     pub me_bind_stale_ttl_secs: u64,
     pub me_secret_atomic_snapshot: bool,
     pub me_deterministic_writer_sort: bool,
+    pub me_writer_pick_mode: MeWriterPickMode,
+    pub me_writer_pick_sample_size: u8,
     pub me_single_endpoint_shadow_writers: u8,
     pub me_single_endpoint_outage_mode_enabled: bool,
     pub me_single_endpoint_outage_disable_quarantine: bool,
@@ -130,6 +135,8 @@ impl HotFields {
             me_bind_stale_ttl_secs: cfg.general.me_bind_stale_ttl_secs,
             me_secret_atomic_snapshot: cfg.general.me_secret_atomic_snapshot,
             me_deterministic_writer_sort: cfg.general.me_deterministic_writer_sort,
+            me_writer_pick_mode: cfg.general.me_writer_pick_mode,
+            me_writer_pick_sample_size: cfg.general.me_writer_pick_sample_size,
             me_single_endpoint_shadow_writers: cfg.general.me_single_endpoint_shadow_writers,
             me_single_endpoint_outage_mode_enabled: cfg
                 .general
@@ -292,6 +299,8 @@ fn overlay_hot_fields(old: &ProxyConfig, new: &ProxyConfig) -> ProxyConfig {
     cfg.general.me_bind_stale_ttl_secs = new.general.me_bind_stale_ttl_secs;
     cfg.general.me_secret_atomic_snapshot = new.general.me_secret_atomic_snapshot;
     cfg.general.me_deterministic_writer_sort = new.general.me_deterministic_writer_sort;
+    cfg.general.me_writer_pick_mode = new.general.me_writer_pick_mode;
+    cfg.general.me_writer_pick_sample_size = new.general.me_writer_pick_sample_size;
     cfg.general.me_single_endpoint_shadow_writers = new.general.me_single_endpoint_shadow_writers;
     cfg.general.me_single_endpoint_outage_mode_enabled =
         new.general.me_single_endpoint_outage_mode_enabled;
@@ -683,11 +692,15 @@ fn log_changes(
     }
     if old_hot.me_secret_atomic_snapshot != new_hot.me_secret_atomic_snapshot
         || old_hot.me_deterministic_writer_sort != new_hot.me_deterministic_writer_sort
+        || old_hot.me_writer_pick_mode != new_hot.me_writer_pick_mode
+        || old_hot.me_writer_pick_sample_size != new_hot.me_writer_pick_sample_size
     {
         info!(
-            "config reload: me_runtime_flags: secret_atomic_snapshot={} deterministic_sort={}",
+            "config reload: me_runtime_flags: secret_atomic_snapshot={} deterministic_sort={} writer_pick_mode={:?} writer_pick_sample_size={}",
             new_hot.me_secret_atomic_snapshot,
-            new_hot.me_deterministic_writer_sort
+            new_hot.me_deterministic_writer_sort,
+            new_hot.me_writer_pick_mode,
+            new_hot.me_writer_pick_sample_size,
         );
     }
     if old_hot.me_single_endpoint_shadow_writers != new_hot.me_single_endpoint_shadow_writers

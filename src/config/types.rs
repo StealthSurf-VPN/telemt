@@ -212,6 +212,32 @@ impl MeRouteNoWriterMode {
     }
 }
 
+/// Middle-End writer selection mode for new client bindings.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MeWriterPickMode {
+    SortedRr,
+    #[default]
+    P2c,
+}
+
+impl MeWriterPickMode {
+    pub fn as_u8(self) -> u8 {
+        match self {
+            MeWriterPickMode::SortedRr => 0,
+            MeWriterPickMode::P2c => 1,
+        }
+    }
+
+    pub fn from_u8(raw: u8) -> Self {
+        match raw {
+            0 => MeWriterPickMode::SortedRr,
+            1 => MeWriterPickMode::P2c,
+            _ => MeWriterPickMode::P2c,
+        }
+    }
+}
+
 /// Per-user unique source IP limit mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
@@ -782,6 +808,14 @@ pub struct GeneralConfig {
     #[serde(default = "default_me_deterministic_writer_sort")]
     pub me_deterministic_writer_sort: bool,
 
+    /// Writer selection mode for ME route bind path.
+    #[serde(default)]
+    pub me_writer_pick_mode: MeWriterPickMode,
+
+    /// Number of candidates sampled by writer picker in `p2c` mode.
+    #[serde(default = "default_me_writer_pick_sample_size")]
+    pub me_writer_pick_sample_size: u8,
+
     /// Enable NTP drift check at startup.
     #[serde(default = "default_ntp_check")]
     pub ntp_check: bool,
@@ -912,6 +946,8 @@ impl Default for GeneralConfig {
             me_reinit_trigger_channel: default_me_reinit_trigger_channel(),
             me_reinit_coalesce_window_ms: default_me_reinit_coalesce_window_ms(),
             me_deterministic_writer_sort: default_me_deterministic_writer_sort(),
+            me_writer_pick_mode: MeWriterPickMode::default(),
+            me_writer_pick_sample_size: default_me_writer_pick_sample_size(),
             ntp_check: default_ntp_check(),
             ntp_servers: default_ntp_servers(),
             auto_degradation_enabled: default_true(),

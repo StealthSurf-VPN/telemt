@@ -1047,6 +1047,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
                         config.general.me_bind_stale_ttl_secs,
                         config.general.me_secret_atomic_snapshot,
                         config.general.me_deterministic_writer_sort,
+                        config.general.me_writer_pick_mode,
+                        config.general.me_writer_pick_sample_size,
                         config.general.me_socks_kdf_policy,
                         config.general.me_writer_cmd_channel_capacity,
                         config.general.me_route_channel_capacity,

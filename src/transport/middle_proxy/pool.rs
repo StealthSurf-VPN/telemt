@@ -7,7 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::sync::{Mutex, Notify, RwLock, mpsc};
 use tokio_util::sync::CancellationToken;
 
-use crate::config::{MeBindStaleMode, MeFloorMode, MeRouteNoWriterMode, MeSocksKdfPolicy};
+use crate::config::{
+    MeBindStaleMode, MeFloorMode, MeRouteNoWriterMode, MeSocksKdfPolicy, MeWriterPickMode,
+};
 use crate::crypto::SecureRandom;
 use crate::network::IpFamily;
 use crate::network::probe::NetworkDecision;
@@ -39,6 +41,7 @@ pub struct MeWriter {
     pub tx: mpsc::Sender<WriterCommand>,
     pub cancel: CancellationToken,
     pub degraded: Arc<AtomicBool>,
+    pub rtt_ema_ms_x10: Arc<AtomicU32>,
     pub draining: Arc<AtomicBool>,
     pub draining_started_at_epoch_secs: Arc<AtomicU64>,
     pub drain_deadline_epoch_secs: Arc<AtomicU64>,
@@ -177,6 +180,8 @@ pub struct MePool {
     pub(super) me_bind_stale_ttl_secs: AtomicU64,
     pub(super) secret_atomic_snapshot: AtomicBool,
     pub(super) me_deterministic_writer_sort: AtomicBool,
+    pub(super) me_writer_pick_mode: AtomicU8,
+    pub(super) me_writer_pick_sample_size: AtomicU8,
     pub(super) me_socks_kdf_policy: AtomicU8,
     pub(super) me_route_no_writer_mode: AtomicU8,
     pub(super) me_route_no_writer_wait: Duration,
@@ -274,6 +279,8 @@ impl MePool {
         me_bind_stale_ttl_secs: u64,
         me_secret_atomic_snapshot: bool,
         me_deterministic_writer_sort: bool,
+        me_writer_pick_mode: MeWriterPickMode,
+        me_writer_pick_sample_size: u8,
         me_socks_kdf_policy: MeSocksKdfPolicy,
         me_writer_cmd_channel_capacity: usize,
         me_route_channel_capacity: usize,
@@ -450,6 +457,8 @@ impl MePool {
             me_bind_stale_ttl_secs: AtomicU64::new(me_bind_stale_ttl_secs),
             secret_atomic_snapshot: AtomicBool::new(me_secret_atomic_snapshot),
             me_deterministic_writer_sort: AtomicBool::new(me_deterministic_writer_sort),
+            me_writer_pick_mode: AtomicU8::new(me_writer_pick_mode.as_u8()),
+            me_writer_pick_sample_size: AtomicU8::new(me_writer_pick_sample_size.clamp(2, 4)),
             me_socks_kdf_policy: AtomicU8::new(me_socks_kdf_policy.as_u8()),
             me_route_no_writer_mode: AtomicU8::new(me_route_no_writer_mode.as_u8()),
             me_route_no_writer_wait: Duration::from_millis(me_route_no_writer_wait_ms),
@@ -489,6 +498,8 @@ impl MePool {
         bind_stale_ttl_secs: u64,
         secret_atomic_snapshot: bool,
         deterministic_writer_sort: bool,
+        writer_pick_mode: MeWriterPickMode,
+        writer_pick_sample_size: u8,
         single_endpoint_shadow_writers: u8,
         single_endpoint_outage_mode_enabled: bool,
         single_endpoint_outage_disable_quarantine: bool,
@@ -535,6 +546,14 @@ impl MePool {
             .store(secret_atomic_snapshot, Ordering::Relaxed);
         self.me_deterministic_writer_sort
             .store(deterministic_writer_sort, Ordering::Relaxed);
+        let previous_writer_pick_mode = self.writer_pick_mode();
+        self.me_writer_pick_mode
+            .store(writer_pick_mode.as_u8(), Ordering::Relaxed);
+        self.me_writer_pick_sample_size
+            .store(writer_pick_sample_size.clamp(2, 4), Ordering::Relaxed);
+        if previous_writer_pick_mode != writer_pick_mode {
+            self.stats.increment_me_writer_pick_mode_switch_total();
+        }
         self.me_single_endpoint_shadow_writers
             .store(single_endpoint_shadow_writers, Ordering::Relaxed);
         self.me_single_endpoint_outage_mode_enabled
@@ -690,6 +709,16 @@ impl MePool {
 
     pub(super) fn bind_stale_mode(&self) -> MeBindStaleMode {
         MeBindStaleMode::from_u8(self.me_bind_stale_mode.load(Ordering::Relaxed))
+    }
+
+    pub(super) fn writer_pick_mode(&self) -> MeWriterPickMode {
+        MeWriterPickMode::from_u8(self.me_writer_pick_mode.load(Ordering::Relaxed))
+    }
+
+    pub(super) fn writer_pick_sample_size(&self) -> usize {
+        self.me_writer_pick_sample_size
+            .load(Ordering::Relaxed)
+            .clamp(2, 4) as usize
     }
 
     pub(super) fn required_writers_for_dc(&self, endpoint_count: usize) -> usize {

@@ -25,6 +25,7 @@ pub(crate) struct MeApiWriterStatusSnapshot {
 pub(crate) struct MeApiDcStatusSnapshot {
     pub dc: i16,
     pub endpoints: Vec<SocketAddr>,
+    pub endpoint_writers: Vec<MeApiDcEndpointWriterSnapshot>,
     pub available_endpoints: usize,
     pub available_pct: f64,
     pub required_writers: usize,
@@ -36,6 +37,12 @@ pub(crate) struct MeApiDcStatusSnapshot {
     pub coverage_pct: f64,
     pub rtt_ms: Option<f64>,
     pub load: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct MeApiDcEndpointWriterSnapshot {
+    pub endpoint: SocketAddr,
+    pub active_writers: usize,
 }
 
 #[derive(Clone, Debug)]
@@ -118,6 +125,8 @@ pub(crate) struct MeApiRuntimeSnapshot {
     pub me_single_endpoint_outage_backoff_max_ms: u64,
     pub me_single_endpoint_shadow_rotate_every_secs: u64,
     pub me_deterministic_writer_sort: bool,
+    pub me_writer_pick_mode: &'static str,
+    pub me_writer_pick_sample_size: u8,
     pub me_socks_kdf_policy: &'static str,
     pub quarantined_endpoints: Vec<MeApiQuarantinedEndpointSnapshot>,
     pub network_path: Vec<MeApiDcPathSnapshot>,
@@ -338,6 +347,16 @@ impl MePool {
 
             dcs.push(MeApiDcStatusSnapshot {
                 dc,
+                endpoint_writers: endpoints
+                    .iter()
+                    .map(|endpoint| MeApiDcEndpointWriterSnapshot {
+                        endpoint: *endpoint,
+                        active_writers: live_writers_by_dc_endpoint
+                            .get(&(dc, *endpoint))
+                            .copied()
+                            .unwrap_or(0),
+                    })
+                    .collect(),
                 endpoints: endpoints.into_iter().collect(),
                 available_endpoints: dc_available_endpoints,
                 available_pct: ratio_pct(dc_available_endpoints, endpoint_count),
@@ -522,6 +541,8 @@ impl MePool {
             me_deterministic_writer_sort: self
                 .me_deterministic_writer_sort
                 .load(Ordering::Relaxed),
+            me_writer_pick_mode: writer_pick_mode_label(self.writer_pick_mode()),
+            me_writer_pick_sample_size: self.writer_pick_sample_size() as u8,
             me_socks_kdf_policy: socks_kdf_policy_label(self.socks_kdf_policy()),
             quarantined_endpoints,
             network_path,
@@ -567,6 +588,13 @@ fn bind_stale_mode_label(mode: MeBindStaleMode) -> &'static str {
         MeBindStaleMode::Never => "never",
         MeBindStaleMode::Ttl => "ttl",
         MeBindStaleMode::Always => "always",
+    }
+}
+
+fn writer_pick_mode_label(mode: crate::config::MeWriterPickMode) -> &'static str {
+    match mode {
+        crate::config::MeWriterPickMode::SortedRr => "sorted_rr",
+        crate::config::MeWriterPickMode::P2c => "p2c",
     }
 }
 

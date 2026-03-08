@@ -16,7 +16,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::collections::VecDeque;
 use tracing::debug;
 
-use crate::config::MeTelemetryLevel;
+use crate::config::{MeTelemetryLevel, MeWriterPickMode};
 use self::telemetry::TelemetryPolicy;
 
 // ============= Stats =============
@@ -95,6 +95,18 @@ pub struct Stats {
     me_route_drop_queue_full: AtomicU64,
     me_route_drop_queue_full_base: AtomicU64,
     me_route_drop_queue_full_high: AtomicU64,
+    me_writer_pick_sorted_rr_success_try_total: AtomicU64,
+    me_writer_pick_sorted_rr_success_fallback_total: AtomicU64,
+    me_writer_pick_sorted_rr_full_total: AtomicU64,
+    me_writer_pick_sorted_rr_closed_total: AtomicU64,
+    me_writer_pick_sorted_rr_no_candidate_total: AtomicU64,
+    me_writer_pick_p2c_success_try_total: AtomicU64,
+    me_writer_pick_p2c_success_fallback_total: AtomicU64,
+    me_writer_pick_p2c_full_total: AtomicU64,
+    me_writer_pick_p2c_closed_total: AtomicU64,
+    me_writer_pick_p2c_no_candidate_total: AtomicU64,
+    me_writer_pick_blocking_fallback_total: AtomicU64,
+    me_writer_pick_mode_switch_total: AtomicU64,
     me_socks_kdf_strict_reject: AtomicU64,
     me_socks_kdf_compat_fallback: AtomicU64,
     secure_padding_invalid: AtomicU64,
@@ -495,6 +507,93 @@ impl Stats {
     pub fn increment_me_route_drop_queue_full_high(&self) {
         if self.telemetry_me_allows_normal() {
             self.me_route_drop_queue_full_high.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_me_writer_pick_success_try_total(&self, mode: MeWriterPickMode) {
+        if !self.telemetry_me_allows_normal() {
+            return;
+        }
+        match mode {
+            MeWriterPickMode::SortedRr => {
+                self.me_writer_pick_sorted_rr_success_try_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            MeWriterPickMode::P2c => {
+                self.me_writer_pick_p2c_success_try_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    pub fn increment_me_writer_pick_success_fallback_total(&self, mode: MeWriterPickMode) {
+        if !self.telemetry_me_allows_normal() {
+            return;
+        }
+        match mode {
+            MeWriterPickMode::SortedRr => {
+                self.me_writer_pick_sorted_rr_success_fallback_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            MeWriterPickMode::P2c => {
+                self.me_writer_pick_p2c_success_fallback_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    pub fn increment_me_writer_pick_full_total(&self, mode: MeWriterPickMode) {
+        if !self.telemetry_me_allows_normal() {
+            return;
+        }
+        match mode {
+            MeWriterPickMode::SortedRr => {
+                self.me_writer_pick_sorted_rr_full_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            MeWriterPickMode::P2c => {
+                self.me_writer_pick_p2c_full_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    pub fn increment_me_writer_pick_closed_total(&self, mode: MeWriterPickMode) {
+        if !self.telemetry_me_allows_normal() {
+            return;
+        }
+        match mode {
+            MeWriterPickMode::SortedRr => {
+                self.me_writer_pick_sorted_rr_closed_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            MeWriterPickMode::P2c => {
+                self.me_writer_pick_p2c_closed_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    pub fn increment_me_writer_pick_no_candidate_total(&self, mode: MeWriterPickMode) {
+        if !self.telemetry_me_allows_normal() {
+            return;
+        }
+        match mode {
+            MeWriterPickMode::SortedRr => {
+                self.me_writer_pick_sorted_rr_no_candidate_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+            MeWriterPickMode::P2c => {
+                self.me_writer_pick_p2c_no_candidate_total
+                    .fetch_add(1, Ordering::Relaxed);
+            }
+        }
+    }
+    pub fn increment_me_writer_pick_blocking_fallback_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.me_writer_pick_blocking_fallback_total
+                .fetch_add(1, Ordering::Relaxed);
+        }
+    }
+    pub fn increment_me_writer_pick_mode_switch_total(&self) {
+        if self.telemetry_me_allows_normal() {
+            self.me_writer_pick_mode_switch_total
+                .fetch_add(1, Ordering::Relaxed);
         }
     }
     pub fn increment_me_socks_kdf_strict_reject(&self) {
@@ -1000,6 +1099,52 @@ impl Stats {
     }
     pub fn get_me_route_drop_queue_full_high(&self) -> u64 {
         self.me_route_drop_queue_full_high.load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_sorted_rr_success_try_total(&self) -> u64 {
+        self.me_writer_pick_sorted_rr_success_try_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_sorted_rr_success_fallback_total(&self) -> u64 {
+        self.me_writer_pick_sorted_rr_success_fallback_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_sorted_rr_full_total(&self) -> u64 {
+        self.me_writer_pick_sorted_rr_full_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_sorted_rr_closed_total(&self) -> u64 {
+        self.me_writer_pick_sorted_rr_closed_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_sorted_rr_no_candidate_total(&self) -> u64 {
+        self.me_writer_pick_sorted_rr_no_candidate_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_p2c_success_try_total(&self) -> u64 {
+        self.me_writer_pick_p2c_success_try_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_p2c_success_fallback_total(&self) -> u64 {
+        self.me_writer_pick_p2c_success_fallback_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_p2c_full_total(&self) -> u64 {
+        self.me_writer_pick_p2c_full_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_p2c_closed_total(&self) -> u64 {
+        self.me_writer_pick_p2c_closed_total.load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_p2c_no_candidate_total(&self) -> u64 {
+        self.me_writer_pick_p2c_no_candidate_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_blocking_fallback_total(&self) -> u64 {
+        self.me_writer_pick_blocking_fallback_total
+            .load(Ordering::Relaxed)
+    }
+    pub fn get_me_writer_pick_mode_switch_total(&self) -> u64 {
+        self.me_writer_pick_mode_switch_total
+            .load(Ordering::Relaxed)
     }
     pub fn get_me_socks_kdf_strict_reject(&self) -> u64 {
         self.me_socks_kdf_strict_reject.load(Ordering::Relaxed)

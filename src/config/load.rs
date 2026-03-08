@@ -519,6 +519,12 @@ impl ProxyConfig {
             ));
         }
 
+        if !(2..=4).contains(&config.general.me_writer_pick_sample_size) {
+            return Err(ProxyError::Config(
+                "general.me_writer_pick_sample_size must be within [2, 4]".to_string(),
+            ));
+        }
+
         if config.general.me_route_inline_recovery_attempts == 0 {
             return Err(ProxyError::Config(
                 "general.me_route_inline_recovery_attempts must be > 0".to_string(),

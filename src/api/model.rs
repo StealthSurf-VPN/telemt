@@ -266,6 +266,7 @@ pub(super) struct MeWritersData {
 pub(super) struct DcStatus {
     pub(super) dc: i16,
     pub(super) endpoints: Vec<String>,
+    pub(super) endpoint_writers: Vec<DcEndpointWriters>,
     pub(super) available_endpoints: usize,
     pub(super) available_pct: f64,
     pub(super) required_writers: usize,
@@ -277,6 +278,12 @@ pub(super) struct DcStatus {
     pub(super) coverage_pct: f64,
     pub(super) rtt_ms: Option<f64>,
     pub(super) load: usize,
+}
+
+#[derive(Serialize, Clone)]
+pub(super) struct DcEndpointWriters {
+    pub(super) endpoint: String,
+    pub(super) active_writers: usize,
 }
 
 #[derive(Serialize, Clone)]
@@ -354,6 +361,8 @@ pub(super) struct MinimalMeRuntimeData {
     pub(super) me_single_endpoint_outage_backoff_max_ms: u64,
     pub(super) me_single_endpoint_shadow_rotate_every_secs: u64,
     pub(super) me_deterministic_writer_sort: bool,
+    pub(super) me_writer_pick_mode: &'static str,
+    pub(super) me_writer_pick_sample_size: u8,
     pub(super) me_socks_kdf_policy: &'static str,
     pub(super) quarantined_endpoints_total: usize,
     pub(super) quarantined_endpoints: Vec<MinimalQuarantineData>,

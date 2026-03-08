@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::time::Instant;
 
 use bytes::{Bytes, BytesMut};
@@ -34,6 +34,7 @@ pub(crate) async fn reader_loop(
     stats: Arc<Stats>,
     _writer_id: u64,
     degraded: Arc<AtomicBool>,
+    writer_rtt_ema_ms_x10: Arc<AtomicU32>,
     cancel: CancellationToken,
 ) -> Result<()> {
     let mut raw = enc_leftover;
@@ -208,6 +209,8 @@ pub(crate) async fn reader_loop(
                     }
                     let degraded_now = entry.1 > entry.0 * 2.0;
                     degraded.store(degraded_now, Ordering::Relaxed);
+                    writer_rtt_ema_ms_x10
+                        .store((entry.1 * 10.0).clamp(0.0, u32::MAX as f64) as u32, Ordering::Relaxed);
                     trace!(writer_id = wid, rtt_ms = rtt, ema_ms = entry.1, base_ms = entry.0, degraded = degraded_now, "ME RTT sample");
                 }
             } else {

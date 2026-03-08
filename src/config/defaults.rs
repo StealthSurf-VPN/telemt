@@ -21,9 +21,10 @@ const DEFAULT_ME_ADAPTIVE_FLOOR_MAX_ACTIVE_WRITERS_PER_CORE: u16 = 64;
 const DEFAULT_ME_ADAPTIVE_FLOOR_MAX_WARM_WRITERS_PER_CORE: u16 = 64;
 const DEFAULT_ME_ADAPTIVE_FLOOR_MAX_ACTIVE_WRITERS_GLOBAL: u32 = 256;
 const DEFAULT_ME_ADAPTIVE_FLOOR_MAX_WARM_WRITERS_GLOBAL: u32 = 256;
-const DEFAULT_ME_WRITER_CMD_CHANNEL_CAPACITY: usize = 512;
+const DEFAULT_ME_WRITER_CMD_CHANNEL_CAPACITY: usize = 1024;
 const DEFAULT_ME_ROUTE_CHANNEL_CAPACITY: usize = 512;
-const DEFAULT_ME_C2ME_CHANNEL_CAPACITY: usize = 128;
+const DEFAULT_ME_C2ME_CHANNEL_CAPACITY: usize = 256;
+const DEFAULT_ME_WRITER_PICK_SAMPLE_SIZE: u8 = 3;
 const DEFAULT_ME_HEALTH_INTERVAL_MS_UNHEALTHY: u64 = 1000;
 const DEFAULT_ME_HEALTH_INTERVAL_MS_HEALTHY: u64 = 3000;
 const DEFAULT_ME_ADMISSION_POLL_MS: u64 = 1000;
@@ -313,6 +314,10 @@ pub(crate) fn default_me_route_channel_capacity() -> usize {
 
 pub(crate) fn default_me_c2me_channel_capacity() -> usize {
     DEFAULT_ME_C2ME_CHANNEL_CAPACITY
+}
+
+pub(crate) fn default_me_writer_pick_sample_size() -> u8 {
+    DEFAULT_ME_WRITER_PICK_SAMPLE_SIZE
 }
 
 pub(crate) fn default_me_health_interval_ms_unhealthy() -> u64 {

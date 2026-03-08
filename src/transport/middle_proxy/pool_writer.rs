@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use std::io::ErrorKind;
 
@@ -128,6 +128,7 @@ impl MePool {
         let contour = Arc::new(AtomicU8::new(contour.as_u8()));
         let cancel = CancellationToken::new();
         let degraded = Arc::new(AtomicBool::new(false));
+        let rtt_ema_ms_x10 = Arc::new(AtomicU32::new(0));
         let draining = Arc::new(AtomicBool::new(false));
         let draining_started_at_epoch_secs = Arc::new(AtomicU64::new(0));
         let drain_deadline_epoch_secs = Arc::new(AtomicU64::new(0));
@@ -169,6 +170,7 @@ impl MePool {
             tx: tx.clone(),
             cancel: cancel.clone(),
             degraded: degraded.clone(),
+            rtt_ema_ms_x10: rtt_ema_ms_x10.clone(),
             draining: draining.clone(),
             draining_started_at_epoch_secs: draining_started_at_epoch_secs.clone(),
             drain_deadline_epoch_secs: drain_deadline_epoch_secs.clone(),
@@ -222,6 +224,7 @@ impl MePool {
                 stats_reader,
                 writer_id,
                 degraded.clone(),
+                rtt_ema_ms_x10.clone(),
                 cancel_reader_token.clone(),
             )
             .await;

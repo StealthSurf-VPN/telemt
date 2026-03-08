@@ -2,7 +2,7 @@ use std::sync::atomic::Ordering;
 
 use serde::Serialize;
 
-use crate::config::{MeFloorMode, ProxyConfig, UserMaxUniqueIpsMode};
+use crate::config::{MeFloorMode, MeWriterPickMode, ProxyConfig, UserMaxUniqueIpsMode};
 
 use super::ApiShared;
 use super::runtime_init::build_runtime_startup_summary;
@@ -78,6 +78,8 @@ pub(super) struct EffectiveMiddleProxyLimits {
     pub(super) reconnect_backoff_base_ms: u64,
     pub(super) reconnect_backoff_cap_ms: u64,
     pub(super) reconnect_fast_retry_count: u32,
+    pub(super) writer_pick_mode: &'static str,
+    pub(super) writer_pick_sample_size: u8,
     pub(super) me2dc_fallback: bool,
 }
 
@@ -237,6 +239,8 @@ pub(super) fn build_limits_effective_data(cfg: &ProxyConfig) -> EffectiveLimitsD
             reconnect_backoff_base_ms: cfg.general.me_reconnect_backoff_base_ms,
             reconnect_backoff_cap_ms: cfg.general.me_reconnect_backoff_cap_ms,
             reconnect_fast_retry_count: cfg.general.me_reconnect_fast_retry_count,
+            writer_pick_mode: me_writer_pick_mode_label(cfg.general.me_writer_pick_mode),
+            writer_pick_sample_size: cfg.general.me_writer_pick_sample_size,
             me2dc_fallback: cfg.general.me2dc_fallback,
         },
         user_ip_policy: EffectiveUserIpPolicyLimits {
@@ -272,5 +276,12 @@ fn me_floor_mode_label(mode: MeFloorMode) -> &'static str {
     match mode {
         MeFloorMode::Static => "static",
         MeFloorMode::Adaptive => "adaptive",
+    }
+}
+
+fn me_writer_pick_mode_label(mode: MeWriterPickMode) -> &'static str {
+    match mode {
+        MeWriterPickMode::SortedRr => "sorted_rr",
+        MeWriterPickMode::P2c => "p2c",
     }
 }

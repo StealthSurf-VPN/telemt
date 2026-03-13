@@ -290,54 +290,41 @@ impl MePool {
                     pick_sample_size,
                 )
             } else {
+                // Snapshot all volatile state BEFORE sorting to avoid
+                // Ord-contract violations from values changing mid-sort.
+                let current_gen = self.current_generation();
+                let mut sort_keys: HashMap<usize, (usize, usize, usize, usize, usize)> =
+                    HashMap::with_capacity(candidate_indices.len());
+                for idx in candidate_indices.iter() {
+                    let w = &writers_snapshot[*idx];
+                    sort_keys.insert(*idx, (
+                        self.writer_contour_rank_for_selection(w),
+                        (w.generation < current_gen) as usize,
+                        w.degraded.load(Ordering::Relaxed) as usize,
+                        self.writer_idle_rank_for_selection(
+                            w,
+                            &writer_idle_since,
+                            now_epoch_secs,
+                        ),
+                        w.tx.capacity(),
+                    ));
+                }
+
                 if self.me_deterministic_writer_sort.load(Ordering::Relaxed) {
                     candidate_indices.sort_by(|lhs, rhs| {
-                        let left = &writers_snapshot[*lhs];
-                        let right = &writers_snapshot[*rhs];
-                        let left_key = (
-                            self.writer_contour_rank_for_selection(left),
-                            (left.generation < self.current_generation()) as usize,
-                            left.degraded.load(Ordering::Relaxed) as usize,
-                            self.writer_idle_rank_for_selection(
-                                left,
-                                &writer_idle_since,
-                                now_epoch_secs,
-                            ),
-                            Reverse(left.tx.capacity()),
-                            left.addr,
-                            left.id,
-                        );
-                        let right_key = (
-                            self.writer_contour_rank_for_selection(right),
-                            (right.generation < self.current_generation()) as usize,
-                            right.degraded.load(Ordering::Relaxed) as usize,
-                            self.writer_idle_rank_for_selection(
-                                right,
-                                &writer_idle_since,
-                                now_epoch_secs,
-                            ),
-                            Reverse(right.tx.capacity()),
-                            right.addr,
-                            right.id,
-                        );
-                        left_key.cmp(&right_key)
+                        let l = &sort_keys[lhs];
+                        let r = &sort_keys[rhs];
+                        let left_w = &writers_snapshot[*lhs];
+                        let right_w = &writers_snapshot[*rhs];
+                        (l.0, l.1, l.2, l.3, Reverse(l.4), left_w.addr, left_w.id)
+                            .cmp(&(r.0, r.1, r.2, r.3, Reverse(r.4), right_w.addr, right_w.id))
                     });
                 } else {
-                    candidate_indices.sort_by_key(|idx| {
-                        let w = &writers_snapshot[*idx];
-                        let degraded = w.degraded.load(Ordering::Relaxed);
-                        let stale = (w.generation < self.current_generation()) as usize;
-                        (
-                            self.writer_contour_rank_for_selection(w),
-                            stale,
-                            degraded as usize,
-                            self.writer_idle_rank_for_selection(
-                                w,
-                                &writer_idle_since,
-                                now_epoch_secs,
-                            ),
-                            Reverse(w.tx.capacity()),
-                        )
+                    candidate_indices.sort_by(|lhs, rhs| {
+                        let l = &sort_keys[lhs];
+                        let r = &sort_keys[rhs];
+                        (l.0, l.1, l.2, l.3, Reverse(l.4))
+                            .cmp(&(r.0, r.1, r.2, r.3, Reverse(r.4)))
                     });
                 }
 
@@ -723,14 +710,20 @@ impl MePool {
             }
         }
 
-        sampled.sort_by_key(|idx| {
-            let writer = &writers_snapshot[*idx];
-            (
-                self.writer_pick_score(writer, idle_since_by_writer, now_epoch_secs),
-                writer.addr,
-                writer.id,
-            )
-        });
+        // Snapshot pick scores BEFORE sorting to avoid Ord-contract
+        // violations from volatile atomics/capacity changing mid-sort.
+        let p2c_keys: HashMap<usize, (u64, SocketAddr, u64)> = sampled
+            .iter()
+            .map(|idx| {
+                let writer = &writers_snapshot[*idx];
+                (*idx, (
+                    self.writer_pick_score(writer, idle_since_by_writer, now_epoch_secs),
+                    writer.addr,
+                    writer.id,
+                ))
+            })
+            .collect();
+        sampled.sort_by(|a, b| p2c_keys[a].cmp(&p2c_keys[b]));
 
         let mut ordered = Vec::<usize>::with_capacity(total);
         ordered.extend(sampled.iter().copied());

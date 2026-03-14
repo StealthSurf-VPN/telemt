@@ -161,12 +161,12 @@ impl MePool {
 
         for dc in endpoints_by_dc.keys() {
             let alive = live_writers_by_dc.get(dc).copied().unwrap_or(0);
-            if alive == 0 {
-                return false;
+            if alive > 0 {
+                return true;
             }
         }
 
-        true
+        false
     }
 
     #[allow(dead_code)]

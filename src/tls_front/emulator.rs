@@ -106,13 +106,20 @@ pub fn build_emulated_server_hello(
     alpn: Option<Vec<u8>>,
     new_session_tickets: u8,
 ) -> Vec<u8> {
-    // --- ServerHello ---
-    let mut extensions = Vec::new();
+    // Helper: write random bytes directly into a Vec without intermediate allocation.
+    let extend_random = |dst: &mut Vec<u8>, len: usize, rng: &SecureRandom| {
+        let start = dst.len();
+        dst.resize(start + len, 0);
+        rng.fill(&mut dst[start..]);
+    };
+
+    // --- Extensions (built inline, ~50 bytes typical) ---
+    let mut extensions = Vec::with_capacity(64);
     // KeyShare (x25519)
     let key = gen_fake_x25519_key(rng);
-    extensions.extend_from_slice(&0x0033u16.to_be_bytes()); // key_share
-    extensions.extend_from_slice(&(2 + 2 + 32u16).to_be_bytes()); // len
-    extensions.extend_from_slice(&0x001du16.to_be_bytes()); // X25519
+    extensions.extend_from_slice(&0x0033u16.to_be_bytes());
+    extensions.extend_from_slice(&(2 + 2 + 32u16).to_be_bytes());
+    extensions.extend_from_slice(&0x001du16.to_be_bytes());
     extensions.extend_from_slice(&(32u16).to_be_bytes());
     extensions.extend_from_slice(&key);
     // supported_versions (TLS1.3)
@@ -130,50 +137,48 @@ pub fn build_emulated_server_hello(
     }
 
     let extensions_len = extensions.len() as u16;
+    let body_len = 2 + 32 + 1 + session_id.len() + 2 + 1 + 2 + extensions.len();
+    let message_len = 4 + body_len;
+    let server_hello_record_len = 5 + message_len;
 
-    let body_len = 2 + // version
-        32 + // random
-        1 + session_id.len() + // session id
-        2 + // cipher
-        1 + // compression
-        2 + extensions.len(); // extensions
+    // Estimate total response size to allocate once.
+    let app_data_estimate = cached.total_app_data_len + cached.app_data_records_sizes.len() * 5 + 256;
+    let ticket_estimate = new_session_tickets as usize * 101;
+    let total_estimate = server_hello_record_len + 6 + app_data_estimate + ticket_estimate;
+    let mut response = Vec::with_capacity(total_estimate);
 
-    let mut message = Vec::with_capacity(4 + body_len);
-    message.push(0x02); // ServerHello
+    // --- ServerHello record ---
+    response.push(TLS_RECORD_HANDSHAKE);
+    response.extend_from_slice(&TLS_VERSION);
+    response.extend_from_slice(&(message_len as u16).to_be_bytes());
+    response.push(0x02); // ServerHello
     let len_bytes = (body_len as u32).to_be_bytes();
-    message.extend_from_slice(&len_bytes[1..4]);
-    message.extend_from_slice(&cached.server_hello_template.version); // 0x0303
-    message.extend_from_slice(&[0u8; 32]); // random placeholder
-    message.push(session_id.len() as u8);
-    message.extend_from_slice(session_id);
+    response.extend_from_slice(&len_bytes[1..4]);
+    response.extend_from_slice(&cached.server_hello_template.version);
+    response.extend_from_slice(&[0u8; 32]); // random placeholder (filled by HMAC later)
+    response.push(session_id.len() as u8);
+    response.extend_from_slice(session_id);
     let cipher = if cached.server_hello_template.cipher_suite == [0, 0] {
         [0x13, 0x01]
     } else {
         cached.server_hello_template.cipher_suite
     };
-    message.extend_from_slice(&cipher);
-    message.push(cached.server_hello_template.compression);
-    message.extend_from_slice(&extensions_len.to_be_bytes());
-    message.extend_from_slice(&extensions);
-
-    let mut server_hello = Vec::with_capacity(5 + message.len());
-    server_hello.push(TLS_RECORD_HANDSHAKE);
-    server_hello.extend_from_slice(&TLS_VERSION);
-    server_hello.extend_from_slice(&(message.len() as u16).to_be_bytes());
-    server_hello.extend_from_slice(&message);
+    response.extend_from_slice(&cipher);
+    response.push(cached.server_hello_template.compression);
+    response.extend_from_slice(&extensions_len.to_be_bytes());
+    response.extend_from_slice(&extensions);
 
     // --- ChangeCipherSpec ---
-    let change_cipher_spec = [
+    response.extend_from_slice(&[
         TLS_RECORD_CHANGE_CIPHER,
         TLS_VERSION[0],
         TLS_VERSION[1],
         0x00,
         0x01,
         0x01,
-    ];
+    ]);
 
     // --- ApplicationData (fake encrypted records) ---
-    // Use the same number and sizes of ApplicationData records as the cached server.
     let mut sizes = cached.app_data_records_sizes.clone();
     if sizes.is_empty() {
         sizes.push(cached.total_app_data_len.max(1024));
@@ -198,13 +203,11 @@ pub fn build_emulated_server_hello(
         sizes = ensure_payload_capacity(sizes, payload.len());
     }
 
-    let mut app_data = Vec::new();
     let mut payload_offset = 0usize;
     for size in sizes {
-        let mut rec = Vec::with_capacity(5 + size);
-        rec.push(TLS_RECORD_APPLICATION);
-        rec.extend_from_slice(&TLS_VERSION);
-        rec.extend_from_slice(&(size as u16).to_be_bytes());
+        response.push(TLS_RECORD_APPLICATION);
+        response.extend_from_slice(&TLS_VERSION);
+        response.extend_from_slice(&(size as u16).to_be_bytes());
 
         if let Some(payload) = selected_payload {
             if size > 17 {
@@ -212,48 +215,37 @@ pub fn build_emulated_server_hello(
                 let remaining = payload.len().saturating_sub(payload_offset);
                 let copy_len = remaining.min(body_len);
                 if copy_len > 0 {
-                    rec.extend_from_slice(&payload[payload_offset..payload_offset + copy_len]);
+                    response.extend_from_slice(&payload[payload_offset..payload_offset + copy_len]);
                     payload_offset += copy_len;
                 }
                 if body_len > copy_len {
-                    rec.extend_from_slice(&rng.bytes(body_len - copy_len));
+                    extend_random(&mut response, body_len - copy_len, rng);
                 }
-                rec.push(0x16); // inner content type marker (handshake)
-                rec.extend_from_slice(&rng.bytes(16)); // AEAD-like tag
+                response.push(0x16);
+                extend_random(&mut response, 16, rng);
             } else {
-                rec.extend_from_slice(&rng.bytes(size));
+                extend_random(&mut response, size, rng);
             }
         } else if size > 17 {
             let body_len = size - 17;
-            rec.extend_from_slice(&rng.bytes(body_len));
-            rec.push(0x16); // inner content type marker (handshake)
-            rec.extend_from_slice(&rng.bytes(16)); // AEAD-like tag
+            extend_random(&mut response, body_len, rng);
+            response.push(0x16);
+            extend_random(&mut response, 16, rng);
         } else {
-            rec.extend_from_slice(&rng.bytes(size));
+            extend_random(&mut response, size, rng);
         }
-        app_data.extend_from_slice(&rec);
     }
 
-    // --- Combine ---
-    // Optional NewSessionTicket mimic records (opaque ApplicationData for fingerprint).
-    let mut tickets = Vec::new();
+    // --- Optional NewSessionTicket records ---
     if new_session_tickets > 0 {
         for _ in 0..new_session_tickets {
             let ticket_len: usize = rng.range(48) + 48;
-            let mut rec = Vec::with_capacity(5 + ticket_len);
-            rec.push(TLS_RECORD_APPLICATION);
-            rec.extend_from_slice(&TLS_VERSION);
-            rec.extend_from_slice(&(ticket_len as u16).to_be_bytes());
-            rec.extend_from_slice(&rng.bytes(ticket_len));
-            tickets.extend_from_slice(&rec);
+            response.push(TLS_RECORD_APPLICATION);
+            response.extend_from_slice(&TLS_VERSION);
+            response.extend_from_slice(&(ticket_len as u16).to_be_bytes());
+            extend_random(&mut response, ticket_len, rng);
         }
     }
-
-    let mut response = Vec::with_capacity(server_hello.len() + change_cipher_spec.len() + app_data.len() + tickets.len());
-    response.extend_from_slice(&server_hello);
-    response.extend_from_slice(&change_cipher_spec);
-    response.extend_from_slice(&app_data);
-    response.extend_from_slice(&tickets);
 
     // --- HMAC ---
     let mut hmac_input = Vec::with_capacity(TLS_DIGEST_LEN + response.len());

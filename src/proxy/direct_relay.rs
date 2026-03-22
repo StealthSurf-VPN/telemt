@@ -131,7 +131,7 @@ fn get_dc_addr_static(dc_idx: i16, config: &ProxyConfig) -> Result<SocketAddr> {
 
     let dc_key = dc_idx.to_string();
     if let Some(addrs) = config.dc_overrides.get(&dc_key) {
-        let mut parsed = Vec::new();
+        let mut parsed = Vec::with_capacity(addrs.len());
         for addr_str in addrs {
             match addr_str.parse::<SocketAddr>() {
                 Ok(addr) => parsed.push(addr),

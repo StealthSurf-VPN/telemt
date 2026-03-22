@@ -246,9 +246,8 @@ impl<R: AsyncRead + Unpin> CryptoReader<R> {
         // Drain Yielding buffer if present (rare, kept for completeness)
         if let CryptoReaderState::Yielding { buffer } = &mut self.state {
             let to_take = buffer.remaining().min(n);
-            let mut temp = vec![0u8; to_take];
-            buffer.copy_to(&mut temp);
-            result.extend_from_slice(&temp);
+            result.resize(to_take, 0);
+            buffer.copy_to(&mut result[..to_take]);
 
             if buffer.is_empty() {
                 self.state = CryptoReaderState::Idle;
@@ -256,17 +255,18 @@ impl<R: AsyncRead + Unpin> CryptoReader<R> {
         }
 
         while result.len() < n {
-            let mut temp = vec![0u8; n - result.len()];
-            let read = self.read(&mut temp).await?;
+            let cur = result.len();
+            let remaining = n - cur;
+            result.resize(cur + remaining, 0);
+            let read = self.read(&mut result[cur..]).await?;
+            result.truncate(cur + read);
 
             if read == 0 {
                 return Err(io::Error::new(
                     ErrorKind::UnexpectedEof,
-                    format!("expected {} bytes, got {}", n, result.len()),
+                    format!("expected {n} bytes, got {}", result.len()),
                 ));
             }
-
-            result.extend_from_slice(&temp[..read]);
         }
 
         Ok(result.freeze())
@@ -282,25 +282,25 @@ impl<R: AsyncRead + Unpin> CryptoReader<R> {
 
         if let CryptoReaderState::Yielding { buffer } = &mut self.state {
             let to_take = buffer.remaining().min(max_size);
-            let mut temp = vec![0u8; to_take];
-            buffer.copy_to(&mut temp);
+            let mut buf = BytesMut::zeroed(to_take);
+            buffer.copy_to(&mut buf[..to_take]);
 
             if buffer.is_empty() {
                 self.state = CryptoReaderState::Idle;
             }
 
-            return Ok(Bytes::from(temp));
+            return Ok(buf.freeze());
         }
 
-        let mut temp = vec![0u8; max_size];
-        let read = self.read(&mut temp).await?;
+        let mut buf = BytesMut::zeroed(max_size);
+        let read = self.read(&mut buf).await?;
 
         if read == 0 {
             return Ok(Bytes::new());
         }
 
-        temp.truncate(read);
-        Ok(Bytes::from(temp))
+        buf.truncate(read);
+        Ok(buf.freeze())
     }
 }
 

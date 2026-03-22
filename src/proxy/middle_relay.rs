@@ -295,19 +295,14 @@ where
         return Err(ProxyError::Proxy(ROUTE_SWITCH_ERROR_MSG.to_string()));
     }
 
-    // Per-user ad_tag from access.user_ad_tags; fallback to general.ad_tag (hot-reloadable)
-    let user_tag: Option<Vec<u8>> = config
-        .access
-        .user_ad_tags
-        .get(&user)
-        .and_then(|s| hex::decode(s).ok())
-        .filter(|v| v.len() == 16);
-    let global_tag: Option<Vec<u8>> = config
-        .general
-        .ad_tag
-        .as_ref()
-        .and_then(|s| hex::decode(s).ok())
-        .filter(|v| v.len() == 16);
+    // Per-user ad_tag from access.user_ad_tags; fallback to general.ad_tag (hot-reloadable).
+    // Decode hex → bytes into stack array to avoid per-connection heap allocation.
+    let decode_tag = |s: &str| -> Option<[u8; 16]> {
+        let v = hex::decode(s).ok()?;
+        <[u8; 16]>::try_from(v.as_slice()).ok()
+    };
+    let user_tag = config.access.user_ad_tags.get(&user).and_then(|s| decode_tag(s));
+    let global_tag = config.general.ad_tag.as_ref().and_then(|s| decode_tag(s));
     let effective_tag = user_tag.or(global_tag);
 
     let proto_flags = proto_flags_for_tag(proto_tag, effective_tag.is_some());
@@ -345,7 +340,7 @@ where
                         translated_local_addr,
                         payload.as_ref(),
                         flags,
-                        effective_tag.as_deref(),
+                        effective_tag.as_ref().map(|t| t.as_slice()),
                     ).await?;
                     sent_since_yield = sent_since_yield.saturating_add(1);
                     if should_yield_c2me_sender(sent_since_yield, !c2me_rx.is_empty()) {

@@ -280,14 +280,15 @@ impl<W: AsyncWrite + Unpin> SecureIntermediateFrameWriter<W> {
 
         // Add padding so total length is never divisible by 4 (MTProto Secure)
         let padding_len = secure_padding_len(data.len(), &self.rng);
-        let padding = self.rng.bytes(padding_len);
-        
+        let mut padding = [0u8; 16];
+        self.rng.fill(&mut padding[..padding_len]);
+
         let total_len = data.len() + padding_len;
         let len_bytes = (total_len as u32).to_le_bytes();
-        
+
         self.upstream.write_all(&len_bytes).await?;
         self.upstream.write_all(data).await?;
-        self.upstream.write_all(&padding).await?;
+        self.upstream.write_all(&padding[..padding_len]).await?;
         
         Ok(())
     }

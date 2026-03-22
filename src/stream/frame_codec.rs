@@ -329,8 +329,9 @@ fn encode_secure(frame: &Frame, dst: &mut BytesMut, rng: &SecureRandom) -> io::R
     dst.extend_from_slice(data);
     
     if padding_len > 0 {
-        let padding = rng.bytes(padding_len);
-        dst.extend_from_slice(&padding);
+        let mut padding = [0u8; 16];
+        rng.fill(&mut padding[..padding_len]);
+        dst.extend_from_slice(&padding[..padding_len]);
     }
     
     Ok(())

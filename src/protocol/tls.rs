@@ -299,32 +299,30 @@ pub fn validate_tls_handshake(
         return None;
     }
     
-    let session_id = handshake[session_id_start..session_id_start + session_id_len].to_vec();
-    
-    // Build message for HMAC (with zeroed digest)
+    // Build message for HMAC (with zeroed digest) — single copy before the loop.
     let mut msg = handshake.to_vec();
     msg[TLS_DIGEST_POS..TLS_DIGEST_POS + TLS_DIGEST_LEN].fill(0);
-    
+
     // Get current time
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
         .as_secs() as i64;
-    
+
     for (user, secret) in secrets {
         let computed = sha256_hmac(secret, &msg);
-        
-        // XOR digests
-        let xored: Vec<u8> = digest.iter()
-            .zip(computed.iter())
-            .map(|(a, b)| a ^ b)
-            .collect();
-        
+
+        // XOR digests on stack (no heap allocation)
+        let mut xored = [0u8; TLS_DIGEST_LEN];
+        for i in 0..TLS_DIGEST_LEN {
+            xored[i] = digest[i] ^ computed[i];
+        }
+
         // Check that first 28 bytes are zeros (timestamp in last 4)
         if !xored[..28].iter().all(|&b| b == 0) {
             continue;
         }
-        
+
         // Extract timestamp
         let timestamp = u32::from_le_bytes(xored[28..32].try_into().unwrap());
         let time_diff = now - timestamp as i64;
@@ -342,7 +340,7 @@ pub fn validate_tls_handshake(
         
         return Some(TlsValidation {
             user: user.clone(),
-            session_id,
+            session_id: handshake[session_id_start..session_id_start + session_id_len].to_vec(),
             digest,
             timestamp,
         });

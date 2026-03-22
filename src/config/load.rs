@@ -818,6 +818,15 @@ impl ProxyConfig {
             }
         }
 
+        for (user, domain) in &self.access.user_tls_domain {
+            if !crate::config::is_valid_tls_domain(domain) {
+                return Err(ProxyError::Config(format!(
+                    "access.user_tls_domain['{}'] invalid domain: '{}'",
+                    user, domain
+                )));
+            }
+        }
+
         crate::network::dns_overrides::validate_entries(&self.network.dns_overrides)?;
 
         Ok(())

@@ -652,6 +652,19 @@ ignore_time_skew = false
 # alice = 3
 # bob = 2
 
+# ------------------------------------------------------------------------------
+# Per-User TLS Domain Override
+# Override the global [censorship] tls_domain for specific users.
+# The user's TLS link will embed this domain, and the TLS handshake ServerHello
+# will use a certificate fetched from this domain instead of the global one.
+# Useful when different users are in different regions with different blocking.
+# If unset, the global tls_domain applies.
+# ------------------------------------------------------------------------------
+
+[access.user_tls_domain]
+# alice = "cdn.cloudflare.com"
+# bob = "www.microsoft.com"
+
 
 # ==============================================================================
 # UPSTREAM ROUTING

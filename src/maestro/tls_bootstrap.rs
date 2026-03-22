@@ -97,7 +97,6 @@ pub(crate) async fn bootstrap_tls_front(
         });
 
         let cache_refresh = cache.clone();
-        let domains_refresh = tls_domains.to_vec();
         let host_refresh = mask_host.clone();
         let unix_sock_refresh = mask_unix_sock.clone();
         let upstream_refresh = upstream_manager.clone();
@@ -108,7 +107,7 @@ pub(crate) async fn bootstrap_tls_front(
                 tokio::time::sleep(Duration::from_secs(base_secs + jitter_secs)).await;
 
                 let mut join = tokio::task::JoinSet::new();
-                for domain in domains_refresh.clone() {
+                for domain in cache_refresh.all_domains().await {
                     let cache_domain = cache_refresh.clone();
                     let host_domain = host_refresh.clone();
                     let unix_sock_domain = unix_sock_refresh.clone();

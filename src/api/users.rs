@@ -13,8 +13,8 @@ use super::config_store::{
 };
 use super::model::{
     ApiFailure, CreateUserRequest, CreateUserResponse, PatchUserRequest, RotateSecretRequest,
-    UserInfo, UserLinks, is_valid_ad_tag, is_valid_user_secret, is_valid_username,
-    parse_optional_expiration, random_user_secret,
+    UserInfo, UserLinks, is_valid_ad_tag, is_valid_tls_domain, is_valid_user_secret,
+    is_valid_username, parse_optional_expiration, random_user_secret,
 };
 
 pub(super) async fn create_user(
@@ -27,6 +27,7 @@ pub(super) async fn create_user(
     let touches_user_expirations = body.expiration_rfc3339.is_some();
     let touches_user_data_quota = body.data_quota_bytes.is_some();
     let touches_user_max_unique_ips = body.max_unique_ips.is_some();
+    let touches_user_tls_domain = body.tls_domain.is_some();
 
     if !is_valid_username(&body.username) {
         return Err(ApiFailure::bad_request(
@@ -49,6 +50,11 @@ pub(super) async fn create_user(
     if let Some(ad_tag) = body.user_ad_tag.as_ref() && !is_valid_ad_tag(ad_tag) {
         return Err(ApiFailure::bad_request(
             "user_ad_tag must be exactly 32 hex characters",
+        ));
+    }
+    if let Some(domain) = body.tls_domain.as_ref() && !is_valid_tls_domain(domain) {
+        return Err(ApiFailure::bad_request(
+            "tls_domain must be a valid domain (alphanumeric, dots, hyphens, max 255 chars)",
         ));
     }
 
@@ -87,6 +93,11 @@ pub(super) async fn create_user(
             .user_max_unique_ips
             .insert(body.username.clone(), limit);
     }
+    if let Some(domain) = body.tls_domain.clone() {
+        cfg.access
+            .user_tls_domain
+            .insert(body.username.clone(), domain);
+    }
 
     cfg.validate()
         .map_err(|e| ApiFailure::bad_request(format!("config validation failed: {}", e)))?;
@@ -107,6 +118,9 @@ pub(super) async fn create_user(
     if touches_user_max_unique_ips {
         touched_sections.push(AccessSection::UserMaxUniqueIps);
     }
+    if touches_user_tls_domain {
+        touched_sections.push(AccessSection::UserTlsDomain);
+    }
 
     let revision = save_access_sections_to_disk(&shared.config_path, &cfg, &touched_sections).await?;
     drop(_guard);
@@ -114,6 +128,7 @@ pub(super) async fn create_user(
     if let Some(limit) = updated_limit {
         shared.ip_tracker.set_user_limit(&body.username, limit).await;
     }
+    shared.ensure_user_tls_domain(&cfg, &body.username).await;
     let (detected_ip_v4, detected_ip_v6) = shared.detected_link_ips();
 
     let users = users_from_config(
@@ -134,6 +149,7 @@ pub(super) async fn create_user(
             expiration_rfc3339: None,
             data_quota_bytes: None,
             max_unique_ips: updated_limit,
+            tls_domain: cfg.access.user_tls_domain.get(&body.username).cloned(),
             current_connections: 0,
             active_unique_ips: 0,
             active_unique_ips_list: Vec::new(),
@@ -143,6 +159,7 @@ pub(super) async fn create_user(
             links: build_user_links(
                 &cfg,
                 &secret,
+                cfg.access.user_tls_domain.get(&body.username).map(String::as_str),
                 detected_ip_v4,
                 detected_ip_v6,
             ),
@@ -165,6 +182,11 @@ pub(super) async fn patch_user(
     if let Some(ad_tag) = body.user_ad_tag.as_ref() && !is_valid_ad_tag(ad_tag) {
         return Err(ApiFailure::bad_request(
             "user_ad_tag must be exactly 32 hex characters",
+        ));
+    }
+    if let Some(domain) = body.tls_domain.as_ref() && !domain.is_empty() && !is_valid_tls_domain(domain) {
+        return Err(ApiFailure::bad_request(
+            "tls_domain must be a valid domain (alphanumeric, dots, hyphens, max 255 chars) or empty string to remove",
         ));
     }
     let expiration = parse_optional_expiration(body.expiration_rfc3339.as_deref())?;
@@ -201,6 +223,13 @@ pub(super) async fn patch_user(
         cfg.access.user_max_unique_ips.insert(user.to_string(), limit);
         updated_limit = Some(limit);
     }
+    if let Some(domain) = body.tls_domain {
+        if domain.is_empty() {
+            cfg.access.user_tls_domain.remove(user);
+        } else {
+            cfg.access.user_tls_domain.insert(user.to_string(), domain);
+        }
+    }
 
     cfg.validate()
         .map_err(|e| ApiFailure::bad_request(format!("config validation failed: {}", e)))?;
@@ -210,6 +239,7 @@ pub(super) async fn patch_user(
     if let Some(limit) = updated_limit {
         shared.ip_tracker.set_user_limit(user, limit).await;
     }
+    shared.ensure_user_tls_domain(&cfg, user).await;
     let (detected_ip_v4, detected_ip_v6) = shared.detected_link_ips();
     let users = users_from_config(
         &cfg,
@@ -262,6 +292,7 @@ pub(super) async fn rotate_secret(
         AccessSection::UserExpirations,
         AccessSection::UserDataQuota,
         AccessSection::UserMaxUniqueIps,
+        AccessSection::UserTlsDomain,
     ];
     let revision = save_access_sections_to_disk(&shared.config_path, &cfg, &touched_sections).await?;
     drop(_guard);
@@ -319,6 +350,7 @@ pub(super) async fn delete_user(
     cfg.access.user_expirations.remove(user);
     cfg.access.user_data_quota.remove(user);
     cfg.access.user_max_unique_ips.remove(user);
+    cfg.access.user_tls_domain.remove(user);
 
     cfg.validate()
         .map_err(|e| ApiFailure::bad_request(format!("config validation failed: {}", e)))?;
@@ -329,6 +361,7 @@ pub(super) async fn delete_user(
         AccessSection::UserExpirations,
         AccessSection::UserDataQuota,
         AccessSection::UserMaxUniqueIps,
+        AccessSection::UserTlsDomain,
     ];
     let revision = save_access_sections_to_disk(&shared.config_path, &cfg, &touched_sections).await?;
     drop(_guard);
@@ -360,6 +393,7 @@ pub(super) async fn users_from_config(
             .get(&username)
             .cloned()
             .unwrap_or_else(Vec::new);
+        let user_domain = cfg.access.user_tls_domain.get(&username).map(String::as_str);
         let links = cfg
             .access
             .users
@@ -368,6 +402,7 @@ pub(super) async fn users_from_config(
                 build_user_links(
                     cfg,
                     secret,
+                    user_domain,
                     startup_detected_ip_v4,
                     startup_detected_ip_v6,
                 )
@@ -387,6 +422,7 @@ pub(super) async fn users_from_config(
                 .map(chrono::DateTime::<chrono::Utc>::to_rfc3339),
             data_quota_bytes: cfg.access.user_data_quota.get(&username).copied(),
             max_unique_ips: cfg.access.user_max_unique_ips.get(&username).copied(),
+            tls_domain: cfg.access.user_tls_domain.get(&username).cloned(),
             current_connections: stats.get_user_curr_connects(&username),
             active_unique_ips: active_ip_list.len(),
             active_unique_ips_list: active_ip_list,
@@ -403,12 +439,17 @@ pub(super) async fn users_from_config(
 fn build_user_links(
     cfg: &ProxyConfig,
     secret: &str,
+    user_tls_domain: Option<&str>,
     startup_detected_ip_v4: Option<IpAddr>,
     startup_detected_ip_v6: Option<IpAddr>,
 ) -> UserLinks {
     let hosts = resolve_link_hosts(cfg, startup_detected_ip_v4, startup_detected_ip_v6);
     let port = cfg.general.links.public_port.unwrap_or(cfg.server.port);
-    let tls_domains = resolve_tls_domains(cfg);
+    let tls_domains = if let Some(domain) = user_tls_domain {
+        vec![domain]
+    } else {
+        resolve_tls_domains(cfg)
+    };
 
     let mut classic = Vec::new();
     let mut secure = Vec::new();

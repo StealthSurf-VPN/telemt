@@ -199,6 +199,30 @@ pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
     };
     let route_runtime = Arc::new(RouteRuntimeController::new(initial_route_mode));
     let api_me_pool = Arc::new(RwLock::new(None::<Arc<MePool>>));
+
+    let mut tls_domains = Vec::with_capacity(
+        1 + config.censorship.tls_domains.len() + config.access.user_tls_domain.len(),
+    );
+    tls_domains.push(config.censorship.tls_domain.clone());
+    for d in &config.censorship.tls_domains {
+        if !tls_domains.contains(d) {
+            tls_domains.push(d.clone());
+        }
+    }
+    for d in config.access.user_tls_domain.values() {
+        if !tls_domains.contains(d) {
+            tls_domains.push(d.clone());
+        }
+    }
+
+    let tls_cache = tls_bootstrap::bootstrap_tls_front(
+        &config,
+        &tls_domains,
+        upstream_manager.clone(),
+        &startup_tracker,
+    )
+    .await;
+
     startup_tracker
         .start_component(COMPONENT_API_BOOTSTRAP, Some("spawn API listener task".to_string()))
         .await;
@@ -226,6 +250,7 @@ pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             let config_path_api = std::path::PathBuf::from(&config_path);
             let startup_tracker_api = startup_tracker.clone();
             let detected_ips_rx_api = detected_ips_rx.clone();
+            let tls_cache_api = tls_cache.clone();
             tokio::spawn(async move {
                 api::serve(
                     listen,
@@ -240,6 +265,7 @@ pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
                     detected_ips_rx_api,
                     process_started_at_epoch_secs,
                     startup_tracker_api,
+                    tls_cache_api,
                 )
                 .await;
             });
@@ -265,22 +291,6 @@ pub async fn run() -> std::result::Result<(), Box<dyn std::error::Error>> {
             )
             .await;
     }
-
-    let mut tls_domains = Vec::with_capacity(1 + config.censorship.tls_domains.len());
-    tls_domains.push(config.censorship.tls_domain.clone());
-    for d in &config.censorship.tls_domains {
-        if !tls_domains.contains(d) {
-            tls_domains.push(d.clone());
-        }
-    }
-
-    let tls_cache = tls_bootstrap::bootstrap_tls_front(
-        &config,
-        &tls_domains,
-        upstream_manager.clone(),
-        &startup_tracker,
-    )
-    .await;
 
     startup_tracker
         .start_component(COMPONENT_NETWORK_PROBE, Some("probe network capabilities".to_string()))

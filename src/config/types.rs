@@ -1317,6 +1317,10 @@ pub struct AccessConfig {
     #[serde(default)]
     pub user_max_unique_ips: HashMap<String, usize>,
 
+    /// Per-user TLS domain override for TLS-fronting.
+    #[serde(default)]
+    pub user_tls_domain: HashMap<String, String>,
+
     #[serde(default)]
     pub user_max_unique_ips_mode: UserMaxUniqueIpsMode,
 
@@ -1342,6 +1346,7 @@ impl Default for AccessConfig {
             user_expirations: HashMap::new(),
             user_data_quota: HashMap::new(),
             user_max_unique_ips: HashMap::new(),
+            user_tls_domain: HashMap::new(),
             user_max_unique_ips_mode: UserMaxUniqueIpsMode::default(),
             user_max_unique_ips_window_secs: default_user_max_unique_ips_window_secs(),
             replay_check_len: default_replay_check_len(),
@@ -1349,6 +1354,21 @@ impl Default for AccessConfig {
             ignore_time_skew: false,
         }
     }
+}
+
+/// Validate a TLS domain name for use in SNI / TLS-fronting.
+pub fn is_valid_tls_domain(domain: &str) -> bool {
+    if domain.is_empty() || domain.len() > 255 || !domain.contains('.') {
+        return false;
+    }
+    domain.split('.').all(|label| {
+        !label.is_empty()
+            && !label.starts_with('-')
+            && !label.ends_with('-')
+            && label
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    })
 }
 
 // ============= Aux Structures =============

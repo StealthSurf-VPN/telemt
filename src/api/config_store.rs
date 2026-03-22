@@ -19,6 +19,7 @@ pub(super) enum AccessSection {
     UserExpirations,
     UserDataQuota,
     UserMaxUniqueIps,
+    UserTlsDomain,
 }
 
 impl AccessSection {
@@ -30,6 +31,7 @@ impl AccessSection {
             Self::UserExpirations => "access.user_expirations",
             Self::UserDataQuota => "access.user_data_quota",
             Self::UserMaxUniqueIps => "access.user_max_unique_ips",
+            Self::UserTlsDomain => "access.user_tls_domain",
         }
     }
 }
@@ -168,6 +170,15 @@ fn render_access_section(cfg: &ProxyConfig, section: AccessSection) -> Result<St
                 .user_max_unique_ips
                 .iter()
                 .map(|(key, value)| (key.clone(), *value))
+                .collect();
+            serialize_table_body(&rows)?
+        }
+        AccessSection::UserTlsDomain => {
+            let rows: BTreeMap<String, String> = cfg
+                .access
+                .user_tls_domain
+                .iter()
+                .map(|(key, value)| (key.clone(), value.clone()))
                 .collect();
             serialize_table_body(&rows)?
         }

@@ -113,6 +113,7 @@ pub struct HotFields {
     pub user_expirations:        std::collections::HashMap<String, chrono::DateTime<chrono::Utc>>,
     pub user_data_quota:         std::collections::HashMap<String, u64>,
     pub user_max_unique_ips:     std::collections::HashMap<String, usize>,
+    pub user_tls_domain:         std::collections::HashMap<String, String>,
     pub user_max_unique_ips_mode: crate::config::UserMaxUniqueIpsMode,
     pub user_max_unique_ips_window_secs: u64,
 }
@@ -227,6 +228,7 @@ impl HotFields {
             user_expirations:        cfg.access.user_expirations.clone(),
             user_data_quota:         cfg.access.user_data_quota.clone(),
             user_max_unique_ips:     cfg.access.user_max_unique_ips.clone(),
+            user_tls_domain:         cfg.access.user_tls_domain.clone(),
             user_max_unique_ips_mode: cfg.access.user_max_unique_ips_mode,
             user_max_unique_ips_window_secs: cfg.access.user_max_unique_ips_window_secs,
         }
@@ -384,6 +386,7 @@ fn overlay_hot_fields(old: &ProxyConfig, new: &ProxyConfig) -> ProxyConfig {
     cfg.access.user_expirations = new.access.user_expirations.clone();
     cfg.access.user_data_quota = new.access.user_data_quota.clone();
     cfg.access.user_max_unique_ips = new.access.user_max_unique_ips.clone();
+    cfg.access.user_tls_domain = new.access.user_tls_domain.clone();
     cfg.access.user_max_unique_ips_mode = new.access.user_max_unique_ips_mode;
     cfg.access.user_max_unique_ips_window_secs = new.access.user_max_unique_ips_window_secs;
 
@@ -949,6 +952,12 @@ fn log_changes(
         info!(
             "config reload: user_max_unique_ips updated ({} entries)",
             new_hot.user_max_unique_ips.len()
+        );
+    }
+    if old_hot.user_tls_domain != new_hot.user_tls_domain {
+        info!(
+            "config reload: user_tls_domain updated ({} entries)",
+            new_hot.user_tls_domain.len()
         );
     }
     if old_hot.user_max_unique_ips_mode != new_hot.user_max_unique_ips_mode

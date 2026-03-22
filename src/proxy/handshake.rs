@@ -130,17 +130,27 @@ where
         None => return HandshakeResult::BadClient { reader, writer },
     };
 
+    // Domain priority: cached SNI from ClientHello > per-user tls_domain > global tls_domain.
     let cached = if config.censorship.tls_emulation {
         if let Some(cache) = tls_cache.as_ref() {
+            let fallback_domain = config
+                .access
+                .user_tls_domain
+                .get(&validation.user)
+                .cloned()
+                .unwrap_or_else(|| config.censorship.tls_domain.clone());
             let selected_domain = if let Some(sni) = tls::extract_sni_from_client_hello(handshake) {
                 if cache.contains_domain(&sni).await {
                     sni
                 } else {
-                    config.censorship.tls_domain.clone()
+                    fallback_domain
                 }
             } else {
-                config.censorship.tls_domain.clone()
+                fallback_domain
             };
+            // Ensure domain is in cache (no-op if already present; registers for
+            // periodic refresh if added via hot-reload after startup).
+            cache.ensure_domain(&selected_domain).await;
             let cached_entry = cache.get(&selected_domain).await;
             let use_full_cert_payload = cache
                 .take_full_cert_budget_for_ip(

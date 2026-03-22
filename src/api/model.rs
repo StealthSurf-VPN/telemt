@@ -402,6 +402,7 @@ pub(super) struct UserInfo {
     pub(super) expiration_rfc3339: Option<String>,
     pub(super) data_quota_bytes: Option<u64>,
     pub(super) max_unique_ips: Option<usize>,
+    pub(super) tls_domain: Option<String>,
     pub(super) current_connections: u64,
     pub(super) active_unique_ips: usize,
     pub(super) active_unique_ips_list: Vec<IpAddr>,
@@ -426,6 +427,7 @@ pub(super) struct CreateUserRequest {
     pub(super) expiration_rfc3339: Option<String>,
     pub(super) data_quota_bytes: Option<u64>,
     pub(super) max_unique_ips: Option<usize>,
+    pub(super) tls_domain: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -436,6 +438,7 @@ pub(super) struct PatchUserRequest {
     pub(super) expiration_rfc3339: Option<String>,
     pub(super) data_quota_bytes: Option<u64>,
     pub(super) max_unique_ips: Option<usize>,
+    pub(super) tls_domain: Option<String>,
 }
 
 #[derive(Default, Deserialize)]
@@ -460,6 +463,10 @@ pub(super) fn is_valid_user_secret(secret: &str) -> bool {
 
 pub(super) fn is_valid_ad_tag(tag: &str) -> bool {
     tag.len() == 32 && tag.chars().all(|c| c.is_ascii_hexdigit())
+}
+
+pub(super) fn is_valid_tls_domain(domain: &str) -> bool {
+    crate::config::is_valid_tls_domain(domain)
 }
 
 pub(super) fn is_valid_username(user: &str) -> bool {

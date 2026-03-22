@@ -19,6 +19,7 @@ use crate::ip_tracker::UserIpTracker;
 use crate::proxy::route_mode::RouteRuntimeController;
 use crate::startup::StartupTracker;
 use crate::stats::Stats;
+use crate::tls_front::TlsFrontCache;
 use crate::transport::middle_proxy::MePool;
 use crate::transport::UpstreamManager;
 
@@ -86,6 +87,7 @@ pub(super) struct ApiShared {
     pub(super) runtime_state: Arc<ApiRuntimeState>,
     pub(super) startup_tracker: Arc<StartupTracker>,
     pub(super) route_runtime: Arc<RouteRuntimeController>,
+    pub(super) tls_cache: Option<Arc<TlsFrontCache>>,
 }
 
 impl ApiShared {
@@ -95,6 +97,53 @@ impl ApiShared {
 
     fn detected_link_ips(&self) -> (Option<IpAddr>, Option<IpAddr>) {
         *self.detected_ips_rx.borrow()
+    }
+
+    /// Ensure the user's TLS domain (if any) is in the TLS cache.
+    async fn ensure_user_tls_domain(&self, cfg: &ProxyConfig, username: &str) {
+        let Some(domain) = cfg.access.user_tls_domain.get(username) else {
+            return;
+        };
+        let Some(cache) = self.tls_cache.as_ref() else {
+            return;
+        };
+        if cache.ensure_domain(domain).await {
+            return;
+        }
+        // Domain was new — spawn a background fetch.
+        let cache = cache.clone();
+        let domain = domain.clone();
+        let mask_host = cfg
+            .censorship
+            .mask_host
+            .clone()
+            .unwrap_or_else(|| cfg.censorship.tls_domain.clone());
+        let mask_port = cfg.censorship.mask_port;
+        let proxy_protocol = cfg.censorship.mask_proxy_protocol;
+        let mask_unix_sock = cfg.censorship.mask_unix_sock.clone();
+        let upstream = self.upstream_manager.clone();
+        tokio::spawn(async move {
+            match crate::tls_front::fetcher::fetch_real_tls(
+                &mask_host,
+                mask_port,
+                &domain,
+                std::time::Duration::from_secs(5),
+                Some(upstream),
+                proxy_protocol,
+                mask_unix_sock.as_deref(),
+            )
+            .await
+            {
+                Ok(res) => cache.update_from_fetch(&domain, res).await,
+                Err(e) => {
+                    warn!(
+                        domain = %domain,
+                        error = %e,
+                        "TLS emulation fetch for user domain failed"
+                    );
+                }
+            }
+        });
     }
 }
 
@@ -111,6 +160,7 @@ pub async fn serve(
     detected_ips_rx: watch::Receiver<(Option<IpAddr>, Option<IpAddr>)>,
     process_started_at_epoch_secs: u64,
     startup_tracker: Arc<StartupTracker>,
+    tls_cache: Option<Arc<TlsFrontCache>>,
 ) {
     let listener = match TcpListener::bind(listen).await {
         Ok(listener) => listener,
@@ -151,6 +201,7 @@ pub async fn serve(
         runtime_state: runtime_state.clone(),
         startup_tracker,
         route_runtime,
+        tls_cache,
     });
 
     spawn_runtime_watchers(

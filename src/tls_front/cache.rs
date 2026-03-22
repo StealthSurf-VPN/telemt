@@ -198,6 +198,30 @@ impl TlsFrontCache {
         debug!(domain = %domain, len = fetched.total_app_data_len, "TLS cache updated");
     }
 
+    /// Insert a default placeholder if domain is not yet in cache.
+    /// Returns `true` if the domain was already present (no fetch needed).
+    pub async fn ensure_domain(&self, domain: &str) -> bool {
+        // Fast path: read lock only (hot path, no contention).
+        if self.memory.read().await.contains_key(domain) {
+            return true;
+        }
+        // Slow path: write lock (rare — only for newly added domains).
+        use std::collections::hash_map::Entry;
+        let mut guard = self.memory.write().await;
+        match guard.entry(domain.to_string()) {
+            Entry::Occupied(_) => true,
+            Entry::Vacant(v) => {
+                v.insert(self.default.clone());
+                false
+            }
+        }
+    }
+
+    /// Return all domains currently in cache.
+    pub async fn all_domains(&self) -> Vec<String> {
+        self.memory.read().await.keys().cloned().collect()
+    }
+
     pub fn default_entry(&self) -> Arc<CachedTlsData> {
         self.default.clone()
     }
